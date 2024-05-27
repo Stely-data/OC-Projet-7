@@ -26,9 +26,8 @@ import multiprocessing as mp
 from functools import partial
 from scipy.stats import kurtosis, iqr, skew
 from sklearn.linear_model import LinearRegression
-#from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder
 import pickle
-import joblib
 import warnings
 
 # Ignore future warnings
@@ -105,32 +104,6 @@ def add_ratios_features(df):
     df['DAYS_CREDIT_MEAN_TO_BIRTH'] = df['BUREAU_DAYS_CREDIT_MEAN'] / df['DAYS_BIRTH']
     df['DAYS_DECISION_MEAN_TO_EMPLOYED'] = df['APPROVED_DAYS_DECISION_MEAN'] / df['DAYS_EMPLOYED']
     df['DAYS_CREDIT_MEAN_TO_EMPLOYED'] = df['BUREAU_DAYS_CREDIT_MEAN'] / df['DAYS_EMPLOYED']
-    return df
-
-
-def drop_application_columns(df):
-    """ Drop features based on permutation feature importance. """
-    drop_list = [
-        'CNT_CHILDREN', 'CNT_FAM_MEMBERS', 'HOUR_APPR_PROCESS_START',
-        'FLAG_EMP_PHONE', 'FLAG_MOBIL', 'FLAG_CONT_MOBILE', 'FLAG_EMAIL', 'FLAG_PHONE',
-        'FLAG_OWN_REALTY', 'REG_REGION_NOT_LIVE_REGION', 'REG_REGION_NOT_WORK_REGION',
-        'REG_CITY_NOT_WORK_CITY', 'OBS_30_CNT_SOCIAL_CIRCLE', 'OBS_60_CNT_SOCIAL_CIRCLE',
-        'AMT_REQ_CREDIT_BUREAU_DAY', 'AMT_REQ_CREDIT_BUREAU_MON', 'AMT_REQ_CREDIT_BUREAU_YEAR', 
-        'COMMONAREA_MODE', 'NONLIVINGAREA_MODE', 'ELEVATORS_MODE', 'NONLIVINGAREA_AVG',
-        'FLOORSMIN_MEDI', 'LANDAREA_MODE', 'NONLIVINGAREA_MEDI', 'LIVINGAPARTMENTS_MODE',
-        'FLOORSMIN_AVG', 'LANDAREA_AVG', 'FLOORSMIN_MODE', 'LANDAREA_MEDI',
-        'COMMONAREA_MEDI', 'YEARS_BUILD_AVG', 'COMMONAREA_AVG', 'BASEMENTAREA_AVG',
-        'BASEMENTAREA_MODE', 'NONLIVINGAPARTMENTS_MEDI', 'BASEMENTAREA_MEDI', 
-        'LIVINGAPARTMENTS_AVG', 'ELEVATORS_AVG', 'YEARS_BUILD_MEDI', 'ENTRANCES_MODE',
-        'NONLIVINGAPARTMENTS_MODE', 'LIVINGAREA_MODE', 'LIVINGAPARTMENTS_MEDI',
-        'YEARS_BUILD_MODE', 'YEARS_BEGINEXPLUATATION_AVG', 'ELEVATORS_MEDI', 'LIVINGAREA_MEDI',
-        'YEARS_BEGINEXPLUATATION_MODE', 'NONLIVINGAPARTMENTS_AVG', 'HOUSETYPE_MODE',
-        'FONDKAPREMONT_MODE', 'EMERGENCYSTATE_MODE'
-    ]
-    # Drop most flag document columns
-    for doc_num in [2,4,5,6,7,9,10,11,12,13,14,15,16,17,19,20,21]:
-        drop_list.append('FLAG_DOCUMENT_{}'.format(doc_num))
-    df.drop(drop_list, axis=1, inplace=True)
     return df
 
 
@@ -668,11 +641,92 @@ def reduce_memory(df):
     print('Final memory usage is: {:.2f} MB - decreased by {:.1f}%'.format(end_mem, memory_reduction))
     return df
 
+ # Fonction pour supprimer les colonnes avec plus de 80% de valeurs manquantes
+def drop_high_missing_columns(df, threshold=0.8):
+    missing_percentage = df.isnull().mean()
+    columns_to_drop = missing_percentage[missing_percentage > threshold].index
+    return df.drop(columns=columns_to_drop), len(columns_to_drop)
+
+# Fonction pour gérer les valeurs aberrantes en fonction de la target
+def cap_values(series, target, threshold=0.05):
+    lower_percentile = np.percentile(series, 1)
+    upper_percentile = np.percentile(series, 99)
+    outliers = (series < lower_percentile) | (series > upper_percentile)
+
+    if target is not None:
+        outlier_pct_target1 = (outliers & (target == 1)).sum() / (target == 1).sum()
+        outlier_pct_target0 = (outliers & (target == 0)).sum() / (target == 0).sum()
+
+        if outlier_pct_target1 > threshold or outlier_pct_target0 > threshold:
+            print(f"Significant outliers detected in {series.name}, not capping values.")
+            return series  # Ne pas appliquer le cap si les valeurs aberrantes sont significatives
+        else:
+            return np.clip(series, lower_percentile, upper_percentile)
+    else:
+        return np.clip(series, lower_percentile, upper_percentile)
+
+def cap_outliers_by_target(df, target):
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        if col != target:
+            df[col] = cap_values(df[col], df[target])
+    return df
+
+# Fonction pour imputer les valeurs manquantes en fonction de la target
+def impute_missing_values_by_target(df, target):
+    # Imputation pour les colonnes numériques
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        if col != target:
+            missing_pct_target1 = df[col][df[target] == 1].isnull().mean()
+            missing_pct_target0 = df[col][df[target] == 0].isnull().mean()
+            if abs(missing_pct_target1 - missing_pct_target0) < 0.05:  # Seuil de 5% de différence
+                df[col].fillna(df[col].median(), inplace=True)
+            else:
+                df.loc[df[target] == 1, col] = df[col][df[target] == 1].fillna(df[col][df[target] == 1].median())
+                df.loc[df[target] == 0, col] = df[col][df[target] == 0].fillna(df[col][df[target] == 0].median())
+
+    # Imputation pour les colonnes catégorielles
+    categorical_cols = df.select_dtypes(include=[object]).columns
+    for col in categorical_cols:
+        mode_target1 = df[col][df[target] == 1].mode()[0]
+        mode_target0 = df[col][df[target] == 0].mode()[0]
+        df.loc[df[target] == 1, col] = df[col][df[target] == 1].fillna(mode_target1)
+        df.loc[df[target] == 0, col] = df[col][df[target] == 0].fillna(mode_target0)
+
+    return df
+
+
+# Fonction pour appliquer l'encodage
+def encode_categorical_features(df):
+    # Identification des colonnes catégorielles
+    categorical_cols = df.select_dtypes(include=[object]).columns
+
+    label_encoders = {}
+
+    for col in categorical_cols:
+        if df[col].nunique() == 2:
+            # Utilisation de label encoding pour les colonnes avec 2 catégories
+            le = LabelEncoder()
+            df[col] = le.fit_transform(df[col])
+            label_encoders[col] = le
+        else:
+            # Utilisation de one-hot encoding pour les colonnes avec plus de 2 catégories
+            df = pd.get_dummies(df, columns=[col], dummy_na=False)
+
+    return df, label_encoders
+
+
+def apply_label_encoding(df, label_encoders):
+    for col, le in label_encoders.items():
+        df[col] = le.transform(df[col])
+    return df
+
 # ------------------------- CONFIGURATIONS -------------------------
 
 # GENERAL CONFIGURATIONS
 NUM_THREADS = 4
-DATA_DIRECTORY = "data/sources/"
+DATA_DIRECTORY = "data/Cleaned/"
 
 # INSTALLMENTS TREND PERIODS
 INSTALLMENTS_LAST_K_TREND_PERIODS = [12, 24, 60, 120]
@@ -944,8 +998,8 @@ set_multiprocessing()
 # Fonction principale
 class FeatureEngineeringPipeline:
     def __init__(self):
-        #self.scaler = None
         self.group_statistics = {}
+        self.train_columns = None  # Pour stocker les colonnes du train
 
     def fit(self, train_df):
         # Initial feature engineering
@@ -992,10 +1046,18 @@ class FeatureEngineeringPipeline:
         # Additional ratio features
         train_df = add_ratios_features(train_df)
 
-        # Standardize features
-        #self.scaler = StandardScaler()
-        #feature_columns = train_df.columns.difference(['TARGET', 'SK_ID_CURR'])
-        #train_df[feature_columns] = self.scaler.fit_transform(train_df[feature_columns])
+        # Nettoyage des données après le feature engineering
+        train_df, dropped_columns_count = drop_high_missing_columns(train_df)
+        print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {train_df.shape[1]}")
+
+        train_df = cap_outliers_by_target(train_df, 'TARGET')
+        train_df = impute_missing_values_by_target(train_df, 'TARGET')
+
+        # Encodage des variables catégorielles
+        train_df, self.label_encoders = encode_categorical_features(train_df)
+
+        # Stocker les colonnes du train
+        self.train_columns = train_df.columns
 
         return train_df
 
@@ -1037,24 +1099,51 @@ class FeatureEngineeringPipeline:
             del cc
             gc.collect()
 
-        # Additional ratio features
-        test_df = add_ratios_features(test_df)
+            # Additional ratio features
+            test_df = add_ratios_features(test_df)
 
-        # Standardize features using the same scaler fitted on the train set
-        #feature_columns = test_df.columns.difference(['TARGET', 'SK_ID_CURR'])
-        #test_df[feature_columns] = self.scaler.transform(test_df[feature_columns])
+            # Nettoyage des données après le feature engineering
+            test_df, dropped_columns_count = drop_high_missing_columns(test_df)
+            print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {test_df.shape[1]}")
+
+            test_df = cap_outliers_by_target(test_df, 'TARGET')
+            test_df = impute_missing_values_by_target(test_df, 'TARGET')
+
+            # Application des encoders sur les données de test
+            test_df = apply_label_encoding(test_df, self.label_encoders)
+
+            # Aligner les colonnes avec celles du train
+            test_df = self.align_columns(test_df)
 
         return test_df
 
+    def align_columns(self, df):
+        # Ajouter les colonnes manquantes avec des valeurs nulles
+        missing_cols = set(self.train_columns) - set(df.columns)
+        for col in missing_cols:
+            df[col] = 0
+
+        # Réordonner les colonnes pour correspondre à l'ordre du train
+        df = df[self.train_columns]
+
+        return df
+
     def save(self, directory):
-        """ Save the group statistics and scaler to files. """
+        """ Save the group statistics and train columns to files. """
         os.makedirs(directory, exist_ok=True)
         with open(os.path.join(directory, 'group_statistics.pkl'), 'wb') as f:
             pickle.dump(self.group_statistics, f)
-        #joblib.dump(self.scaler, os.path.join(directory, 'scaler.joblib'))
+        with open(os.path.join(directory, 'train_columns.pkl'), 'wb') as f:
+            pickle.dump(self.train_columns, f)
+        with open(os.path.join(directory, 'label_encoders.pkl'), 'wb') as f:
+            pickle.dump(self.label_encoders, f)
 
     def load(self, directory):
-        """ Load the group statistics and scaler from files. """
+        """ Load the group statistics and train columns from files. """
         with open(os.path.join(directory, 'group_statistics.pkl'), 'rb') as f:
             self.group_statistics = pickle.load(f)
-        #self.scaler = joblib.load(os.path.join(directory, 'scaler.joblib'))
+        with open(os.path.join(directory, 'train_columns.pkl'), 'rb') as f:
+            self.train_columns = pickle.load(f)
+        with open(os.path.join(directory, 'label_encoders.pkl'), 'rb') as f:
+            self.label_encoders = pickle.load(f)
+
