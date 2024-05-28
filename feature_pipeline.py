@@ -27,6 +27,7 @@ from functools import partial
 from scipy.stats import kurtosis, iqr, skew
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import LabelEncoder
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 import pickle
 import warnings
 
@@ -647,10 +648,15 @@ def drop_high_missing_columns(df, threshold=0.8):
     columns_to_drop = missing_percentage[missing_percentage > threshold].index
     return df.drop(columns=columns_to_drop), len(columns_to_drop)
 
+# Fonction pour remplacer les valeurs infinies par NaN
+def replace_infinite_values(df):
+    return df.replace([np.inf, -np.inf], np.nan)
+
 # Fonction pour gérer les valeurs aberrantes en fonction de la target
 def cap_values(series, target, threshold=0.05):
-    lower_percentile = np.percentile(series, 1)
-    upper_percentile = np.percentile(series, 99)
+    series = series.replace([np.inf, -np.inf], np.nan)
+    lower_percentile = np.nanpercentile(series, 1)
+    upper_percentile = np.nanpercentile(series, 99)
     outliers = (series < lower_percentile) | (series > upper_percentile)
 
     if target is not None:
@@ -722,10 +728,42 @@ def apply_label_encoding(df, label_encoders):
         df[col] = le.transform(df[col])
     return df
 
+
+def drop_constant_columns(df):
+    constant_columns = [col for col in df.columns if df[col].nunique() == 1]
+    return df.drop(columns=constant_columns), len(constant_columns)
+
+
+def remove_low_correlation_features(df, target, threshold=0.01):
+    correlation_matrix = df.corr()
+    target_corr = correlation_matrix[target].abs()
+    low_corr_features = target_corr[target_corr < threshold].index
+    return df.drop(columns=low_corr_features), low_corr_features
+
+
+def remove_highly_correlated_features(df, threshold=0.9):
+    corr_matrix = df.corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+    return df.drop(columns=to_drop), to_drop
+
+
+def calculate_vif(df):
+    vif_data = pd.DataFrame()
+    vif_data["feature"] = df.columns
+    vif_data["VIF"] = [variance_inflation_factor(df.values, i) for i in range(df.shape[1])]
+    return vif_data
+
+def remove_high_vif_features(df, threshold=10):
+    vif_data = calculate_vif(df)
+    high_vif_features = vif_data[vif_data['VIF'] > threshold]['feature']
+    return df.drop(columns=high_vif_features), high_vif_features
+
+
 # ------------------------- CONFIGURATIONS -------------------------
 
 # GENERAL CONFIGURATIONS
-NUM_THREADS = 4
+NUM_THREADS = 6
 DATA_DIRECTORY = "data/Cleaned/"
 
 # INSTALLMENTS TREND PERIODS
@@ -997,9 +1035,11 @@ set_multiprocessing()
 
 # Fonction principale
 class FeatureEngineeringPipeline:
-    def __init__(self):
+    def __init__(self, low_corr_threshold=0.01):
         self.group_statistics = {}
         self.train_columns = None  # Pour stocker les colonnes du train
+        self.label_encoders = {}  # Pour stocker les label encoders
+        self.low_corr_threshold = low_corr_threshold
 
     def fit(self, train_df):
         # Initial feature engineering
@@ -1046,15 +1086,32 @@ class FeatureEngineeringPipeline:
         # Additional ratio features
         train_df = add_ratios_features(train_df)
 
+        # Remplacer les valeurs infinies par NaN après ajout des caractéristiques
+        train_df = replace_infinite_values(train_df)
+
         # Nettoyage des données après le feature engineering
         train_df, dropped_columns_count = drop_high_missing_columns(train_df)
         print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {train_df.shape[1]}")
 
         train_df = cap_outliers_by_target(train_df, 'TARGET')
+        print(f"Gestion des outliers - done")
+
         train_df = impute_missing_values_by_target(train_df, 'TARGET')
+        print(f"Gestion des valeurs manquantes - done")
+
+        # Suppression des colonnes constantes
+        train_df, constant_columns_count = drop_constant_columns(train_df)
+        print(f"Colonnes supprimées (constantes): {constant_columns_count}, Colonnes restantes: {train_df.shape[1]}")
 
         # Encodage des variables catégorielles
         train_df, self.label_encoders = encode_categorical_features(train_df)
+
+        train_df = reduce_memory(train_df)
+
+        # Suppression des variables peu corrélées avec la cible
+        train_df, low_corr_features = remove_low_correlation_features(train_df, 'TARGET',
+                                                                      threshold=self.low_corr_threshold)
+        print(f"Variables peu corrélées supprimées: {len(low_corr_features)}")
 
         # Stocker les colonnes du train
         self.train_columns = train_df.columns
@@ -1102,6 +1159,9 @@ class FeatureEngineeringPipeline:
             # Additional ratio features
             test_df = add_ratios_features(test_df)
 
+            # Remplacer les valeurs infinies par NaN après ajout des caractéristiques
+            test_df = replace_infinite_values(test_df)
+
             # Nettoyage des données après le feature engineering
             test_df, dropped_columns_count = drop_high_missing_columns(test_df)
             print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {test_df.shape[1]}")
@@ -1115,13 +1175,21 @@ class FeatureEngineeringPipeline:
             # Aligner les colonnes avec celles du train
             test_df = self.align_columns(test_df)
 
+            test_df = reduce_memory(test_df)
+
         return test_df
 
     def align_columns(self, df):
         # Ajouter les colonnes manquantes avec des valeurs nulles
         missing_cols = set(self.train_columns) - set(df.columns)
-        for col in missing_cols:
-            df[col] = 0
+        if missing_cols:
+            missing_df = pd.DataFrame(0, index=df.index, columns=list(missing_cols))
+            df = pd.concat([df, missing_df], axis=1)
+
+        # Supprimer les colonnes en trop
+        extra_cols = set(df.columns) - set(self.train_columns)
+        if extra_cols:
+            df.drop(columns=list(extra_cols), inplace=True)
 
         # Réordonner les colonnes pour correspondre à l'ordre du train
         df = df[self.train_columns]
@@ -1138,6 +1206,12 @@ class FeatureEngineeringPipeline:
         with open(os.path.join(directory, 'label_encoders.pkl'), 'wb') as f:
             pickle.dump(self.label_encoders, f)
 
+        # Libérer de la mémoire après la sauvegarde
+        del self.group_statistics
+        del self.train_columns
+        del self.label_encoders
+        gc.collect()
+
     def load(self, directory):
         """ Load the group statistics and train columns from files. """
         with open(os.path.join(directory, 'group_statistics.pkl'), 'rb') as f:
@@ -1146,4 +1220,11 @@ class FeatureEngineeringPipeline:
             self.train_columns = pickle.load(f)
         with open(os.path.join(directory, 'label_encoders.pkl'), 'rb') as f:
             self.label_encoders = pickle.load(f)
+
+
+# Fonction pour libérer la mémoire
+def free_memory(df):
+    """Libère la mémoire utilisée par un DataFrame."""
+    del df
+    gc.collect()
 

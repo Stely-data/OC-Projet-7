@@ -37,10 +37,4 @@ data/Cleaned/POS_CASH_balance.csv
 data/Cleaned/previous_application.csv
 data/Cleaned/test.csv
 data/Cleaned/train.csv
-.idea_svg/.name
-.idea_svg/inspectionProfiles/profiles_settings.xml
-.idea_svg/inspectionProfiles/Project_Default.xml
-.idea_svg/misc.xml
-.idea_svg/modules.xml
-.idea_svg/Projet-7.iml
-.idea_svg/vcs.xml
+.idea
