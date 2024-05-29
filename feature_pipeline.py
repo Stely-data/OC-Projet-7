@@ -23,6 +23,8 @@ import numpy as np
 import pandas as pd
 from contextlib import contextmanager
 import multiprocessing as mp
+import gc
+from multiprocessing import Pool, cpu_count
 from functools import partial
 from scipy.stats import kurtosis, iqr, skew
 from sklearn.linear_model import LinearRegression
@@ -458,17 +460,24 @@ def timer(name):
     yield
     print("{} - done in {:.0f}s".format(name, time.time() - t0))
 
+def group_and_merge(df_to_agg, df_to_merge, prefix, aggregations, aggregate_by='SK_ID_CURR'):
+    num_partitions = cpu_count() - 1  # Nombre de partitions = nombre de CPUs - 1
+    partitions = np.array_split(df_to_agg, num_partitions)
+    pool = Pool(num_partitions)
+    func = partial(group, prefix=prefix, aggregations=aggregations, aggregate_by=aggregate_by)
+    results = pool.map(func, partitions)
+    pool.close()
+    pool.join()
+    agg_df = pd.concat(results, axis=0)
+    agg_df = agg_df.groupby(aggregate_by).mean().reset_index()  # Aggrégation finale après concaténation
+    return df_to_merge.merge(agg_df, how='left', on=aggregate_by)
+
 
 def group(df_to_agg, prefix, aggregations, aggregate_by= 'SK_ID_CURR'):
     agg_df = df_to_agg.groupby(aggregate_by).agg(aggregations)
     agg_df.columns = pd.Index(['{}{}_{}'.format(prefix, e[0], e[1].upper())
                                for e in agg_df.columns.tolist()])
     return agg_df.reset_index()
-
-
-def group_and_merge(df_to_agg, df_to_merge, prefix, aggregations, aggregate_by= 'SK_ID_CURR'):
-    agg_df = group(df_to_agg, prefix, aggregations, aggregate_by= aggregate_by)
-    return df_to_merge.merge(agg_df, how='left', on= aggregate_by)
 
 
 def do_mean(df, group_cols, counted, agg_name):
@@ -652,53 +661,38 @@ def drop_high_missing_columns(df, threshold=0.8):
 def replace_infinite_values(df):
     return df.replace([np.inf, -np.inf], np.nan)
 
-# Fonction pour gérer les valeurs aberrantes en fonction de la target
-def cap_values(series, target, threshold=0.05):
-    series = series.replace([np.inf, -np.inf], np.nan)
-    lower_percentile = np.nanpercentile(series, 1)
-    upper_percentile = np.nanpercentile(series, 99)
+# Fonction pour gérer les valeurs aberrantes
+def cap_values(series, threshold=0.2):
+    lower_percentile = np.percentile(series, 1)
+    upper_percentile = np.percentile(series, 99)
     outliers = (series < lower_percentile) | (series > upper_percentile)
 
-    if target is not None:
-        outlier_pct_target1 = (outliers & (target == 1)).sum() / (target == 1).sum()
-        outlier_pct_target0 = (outliers & (target == 0)).sum() / (target == 0).sum()
+    outlier_pct = outliers.sum() / len(series)
 
-        if outlier_pct_target1 > threshold or outlier_pct_target0 > threshold:
-            print(f"Significant outliers detected in {series.name}, not capping values.")
-            return series  # Ne pas appliquer le cap si les valeurs aberrantes sont significatives
-        else:
-            return np.clip(series, lower_percentile, upper_percentile)
+    if outlier_pct > threshold:
+        print("Significant outliers detected, not capping values.")
+        return series  # Ne pas appliquer le cap si les valeurs aberrantes sont significatives
     else:
         return np.clip(series, lower_percentile, upper_percentile)
 
-def cap_outliers_by_target(df, target):
+def cap_outliers(df):
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     for col in numeric_cols:
-        if col != target:
-            df[col] = cap_values(df[col], df[target])
+            df[col] = cap_values(df[col])
     return df
 
-# Fonction pour imputer les valeurs manquantes en fonction de la target
-def impute_missing_values_by_target(df, target):
+
+# Fonction pour imputer les valeurs manquantes
+def impute_missing_values(df):
     # Imputation pour les colonnes numériques
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     for col in numeric_cols:
-        if col != target:
-            missing_pct_target1 = df[col][df[target] == 1].isnull().mean()
-            missing_pct_target0 = df[col][df[target] == 0].isnull().mean()
-            if abs(missing_pct_target1 - missing_pct_target0) < 0.05:  # Seuil de 5% de différence
-                df[col].fillna(df[col].median(), inplace=True)
-            else:
-                df.loc[df[target] == 1, col] = df[col][df[target] == 1].fillna(df[col][df[target] == 1].median())
-                df.loc[df[target] == 0, col] = df[col][df[target] == 0].fillna(df[col][df[target] == 0].median())
+        df[col].fillna(df[col].median(), inplace=True)
 
     # Imputation pour les colonnes catégorielles
     categorical_cols = df.select_dtypes(include=[object]).columns
     for col in categorical_cols:
-        mode_target1 = df[col][df[target] == 1].mode()[0]
-        mode_target0 = df[col][df[target] == 0].mode()[0]
-        df.loc[df[target] == 1, col] = df[col][df[target] == 1].fillna(mode_target1)
-        df.loc[df[target] == 0, col] = df[col][df[target] == 0].fillna(mode_target0)
+        df[col].fillna(df[col].mode()[0], inplace=True)
 
     return df
 
@@ -764,7 +758,6 @@ def remove_high_vif_features(df, threshold=10):
 
 # GENERAL CONFIGURATIONS
 NUM_THREADS = 6
-DATA_DIRECTORY = "data/Cleaned/"
 
 # INSTALLMENTS TREND PERIODS
 INSTALLMENTS_LAST_K_TREND_PERIODS = [12, 24, 60, 120]
@@ -1035,15 +1028,21 @@ set_multiprocessing()
 
 # Fonction principale
 class FeatureEngineeringPipeline:
-    def __init__(self, low_corr_threshold=0.01):
+    def __init__(self, data_directory="data/Cleaned/", low_corr_threshold=0.01):
         self.group_statistics = {}
         self.train_columns = None  # Pour stocker les colonnes du train
         self.label_encoders = {}  # Pour stocker les label encoders
         self.low_corr_threshold = low_corr_threshold
+        self.data_directory = data_directory  # Répertoire des données
 
-    def fit(self, train_df):
+    def fit(self):
+        # Charger les données d'entraînement à partir du fichier CSV
+        train_df = pd.read_csv(os.path.join(self.data_directory, "train.csv"))
+
         # Initial feature engineering
         train_df = feature_engineering(train_df)
+
+        print(f"feature_engineering - done")
 
         # Group statistics
         group_cols = ['ORGANIZATION_TYPE', 'NAME_EDUCATION_TYPE', 'OCCUPATION_TYPE', 'AGE_RANGE', 'CODE_GENDER']
@@ -1056,29 +1055,29 @@ class FeatureEngineeringPipeline:
 
         # Load and merge additional features
         with timer("Bureau and bureau_balance data"):
-            bureau_df = get_bureau(DATA_DIRECTORY)
+            bureau_df = get_bureau(self.data_directory)
             train_df = pd.merge(train_df, bureau_df, on='SK_ID_CURR', how='left')
             del bureau_df
             gc.collect()
 
         with timer("previous_application"):
-            prev_df = get_previous_applications(DATA_DIRECTORY)
+            prev_df = get_previous_applications(self.data_directory)
             train_df = pd.merge(train_df, prev_df, on='SK_ID_CURR', how='left')
             del prev_df
             gc.collect()
 
         with timer("previous applications balances"):
-            pos = get_pos_cash(DATA_DIRECTORY)
+            pos = get_pos_cash(self.data_directory)
             train_df = pd.merge(train_df, pos, on='SK_ID_CURR', how='left')
             del pos
             gc.collect()
 
-            ins = get_installment_payments(DATA_DIRECTORY)
+            ins = get_installment_payments(self.data_directory)
             train_df = pd.merge(train_df, ins, on='SK_ID_CURR', how='left')
             del ins
             gc.collect()
 
-            cc = get_credit_card(DATA_DIRECTORY)
+            cc = get_credit_card(self.data_directory)
             train_df = pd.merge(train_df, cc, on='SK_ID_CURR', how='left')
             del cc
             gc.collect()
@@ -1093,11 +1092,13 @@ class FeatureEngineeringPipeline:
         train_df, dropped_columns_count = drop_high_missing_columns(train_df)
         print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {train_df.shape[1]}")
 
-        train_df = cap_outliers_by_target(train_df, 'TARGET')
+        train_df = cap_outliers(train_df)
         print(f"Gestion des outliers - done")
 
-        train_df = impute_missing_values_by_target(train_df, 'TARGET')
-        print(f"Gestion des valeurs manquantes - done")
+        # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
+        if self.data_directory == "data/Cleaned/Imputed/" and train_df.isnull().sum().sum() > 0:
+            train_df = impute_missing_values(train_df)
+            print(f"Gestion des valeurs manquantes - done")
 
         # Suppression des colonnes constantes
         train_df, constant_columns_count = drop_constant_columns(train_df)
@@ -1129,29 +1130,29 @@ class FeatureEngineeringPipeline:
 
         # Load and merge additional features
         with timer("Bureau and bureau_balance data"):
-            bureau_df = get_bureau(DATA_DIRECTORY)
+            bureau_df = get_bureau(self.data_directory)
             test_df = pd.merge(test_df, bureau_df, on='SK_ID_CURR', how='left')
             del bureau_df
             gc.collect()
 
         with timer("previous_application"):
-            prev_df = get_previous_applications(DATA_DIRECTORY)
+            prev_df = get_previous_applications(self.data_directory)
             test_df = pd.merge(test_df, prev_df, on='SK_ID_CURR', how='left')
             del prev_df
             gc.collect()
 
         with timer("previous applications balances"):
-            pos = get_pos_cash(DATA_DIRECTORY)
+            pos = get_pos_cash(self.data_directory)
             test_df = pd.merge(test_df, pos, on='SK_ID_CURR', how='left')
             del pos
             gc.collect()
 
-            ins = get_installment_payments(DATA_DIRECTORY)
+            ins = get_installment_payments(self.data_directory)
             test_df = pd.merge(test_df, ins, on='SK_ID_CURR', how='left')
             del ins
             gc.collect()
 
-            cc = get_credit_card(DATA_DIRECTORY)
+            cc = get_credit_card(self.data_directory)
             test_df = pd.merge(test_df, cc, on='SK_ID_CURR', how='left')
             del cc
             gc.collect()
@@ -1166,8 +1167,12 @@ class FeatureEngineeringPipeline:
             test_df, dropped_columns_count = drop_high_missing_columns(test_df)
             print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {test_df.shape[1]}")
 
-            test_df = cap_outliers_by_target(test_df, 'TARGET')
-            test_df = impute_missing_values_by_target(test_df, 'TARGET')
+            test_df = cap_outliers(test_df)
+
+            # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
+            if self.data_directory == "data/Cleaned/Imputed/" and test_df.isnull().sum().sum() > 0:
+                test_df = impute_missing_values(test_df)
+                print(f"Gestion des valeurs manquantes - done")
 
             # Application des encoders sur les données de test
             test_df = apply_label_encoding(test_df, self.label_encoders)
