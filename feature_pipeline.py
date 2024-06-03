@@ -1094,11 +1094,6 @@ class FeatureEngineeringPipeline:
 
         train_df = reduce_memory(train_df)
 
-        # Suppression des variables peu corrélées avec la cible
-        train_df, low_corr_features = remove_low_correlation_features(train_df, 'TARGET',
-                                                                      threshold=self.low_corr_threshold)
-        print(f"Variables peu corrélées supprimées: {len(low_corr_features)}")
-
         # Stocker les colonnes du train
         self.train_columns = train_df.columns
 
