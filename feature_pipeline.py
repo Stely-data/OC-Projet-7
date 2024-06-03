@@ -29,7 +29,6 @@ from functools import partial
 from scipy.stats import kurtosis, iqr, skew
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import LabelEncoder
-from statsmodels.stats.outliers_influence import variance_inflation_factor
 import pickle
 import warnings
 
@@ -741,19 +740,6 @@ def remove_highly_correlated_features(df, threshold=0.9):
     to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
     return df.drop(columns=to_drop), to_drop
 
-
-def calculate_vif(df):
-    vif_data = pd.DataFrame()
-    vif_data["feature"] = df.columns
-    vif_data["VIF"] = [variance_inflation_factor(df.values, i) for i in range(df.shape[1])]
-    return vif_data
-
-def remove_high_vif_features(df, threshold=10):
-    vif_data = calculate_vif(df)
-    high_vif_features = vif_data[vif_data['VIF'] > threshold]['feature']
-    return df.drop(columns=high_vif_features), high_vif_features
-
-
 # ------------------------- CONFIGURATIONS -------------------------
 
 # GENERAL CONFIGURATIONS
@@ -1023,9 +1009,6 @@ def set_multiprocessing():
     except RuntimeError:
         pass  # Le contexte est déjà défini, on passe.
 
-# Appel de la fonction de configuration multiprocessing
-set_multiprocessing()
-
 # Fonction principale
 class FeatureEngineeringPipeline:
     def __init__(self, data_directory="data/Cleaned/", low_corr_threshold=0.01):
@@ -1034,7 +1017,9 @@ class FeatureEngineeringPipeline:
         self.label_encoders = {}  # Pour stocker les label encoders
         self.low_corr_threshold = low_corr_threshold
         self.data_directory = data_directory  # Répertoire des données
-
+        # Appel de la fonction de configuration multiprocessing
+        set_multiprocessing()
+        
     def fit(self):
         # Charger les données d'entraînement à partir du fichier CSV
         train_df = pd.read_csv(os.path.join(self.data_directory, "train.csv"))
