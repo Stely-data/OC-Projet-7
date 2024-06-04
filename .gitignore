@@ -57,3 +57,10 @@ data/Featured/test_imputed_transformed.csv
 data/Featured/test_transformed.csv
 data/Featured/train_imputed_transformed.csv
 data/Featured/train_transformed.csv
+catboost_info/catboost_training.json
+catboost_info/learn/events.out.tfevents
+catboost_info/learn_error.tsv
+catboost_info/test/events.out.tfevents
+catboost_info/test_error.tsv
+catboost_info/time_left.tsv
+catboost_info/tmp/cat_feature_index.bfcbe294-bd712b34-33f7ed6-1650b13f.tmp
