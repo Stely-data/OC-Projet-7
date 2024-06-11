@@ -64,3 +64,5 @@ catboost_info/test/events.out.tfevents
 catboost_info/test_error.tsv
 catboost_info/time_left.tsv
 catboost_info/tmp/cat_feature_index.bfcbe294-bd712b34-33f7ed6-1650b13f.tmp
+catboost_info/tmp/cat_feature_index.a37bf605-3b8fd4ab-d21d252f-119d4dda.tmp
+catboost_info/tmp/cat_feature_index.873d47f-871aa399-b11fc5c8-5bba97d8.tmp
