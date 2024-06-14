@@ -1,19 +1,12 @@
 # %% [code]
 """
+Adapted from the kernel available at:
 KAGGLE HOME CREDIT DEFAULT RISK COMPETITION
-Adapted from one of the models used in 7th place solution ensemble.
-For more details about our solution please check this discussion:
-https://www.kaggle.com/c/home-credit-default-risk/discussion/64580
+https://www.kaggle.com/code/jsaguiar/lightgbm-7th-place-solution
 
-Another similar version is also available at GitHub:
-https://github.com/js-aguiar/home-credit-default-competition
-
-This model uses LightGBM with goss and label encode for the application's 
-categorical features. Other tables are using one-hot encode with mean, 
-sum and a few different functions to aggregate. The main ideia was to add 
-more time related features like last application and last X months aggregations.
-There are also aggregations for specific loan types and status as well as
-ratios between tables. Configurations are in line 812
+This version retains only the feature engineering part of the original kernel.
+The code has been significantly modified and extended to fit the requirements
+of my project, including the addition of new functions and customizations.
 """
 
 import os
@@ -650,35 +643,19 @@ def reduce_memory(df):
     print('Final memory usage is: {:.2f} MB - decreased by {:.1f}%'.format(end_mem, memory_reduction))
     return df
 
- # Fonction pour supprimer les colonnes avec plus de 80% de valeurs manquantes
-def drop_high_missing_columns(df, threshold=0.8):
+ # Fonction pour supprimer les colonnes avec plus de 50% de valeurs manquantes
+def drop_high_missing_columns(df, threshold=0.5):
     missing_percentage = df.isnull().mean()
     columns_to_drop = missing_percentage[missing_percentage > threshold].index
     return df.drop(columns=columns_to_drop), len(columns_to_drop)
 
+
 # Fonction pour remplacer les valeurs infinies par NaN
 def replace_infinite_values(df):
+    # Vérifier s'il y a des valeurs infinies
+    if df.isin([np.inf, -np.inf]).any().any():
+        print("Gestion des valeurs infinies")
     return df.replace([np.inf, -np.inf], np.nan)
-
-# Fonction pour gérer les valeurs aberrantes
-def cap_values(series, threshold=0.2):
-    lower_percentile = np.percentile(series, 1)
-    upper_percentile = np.percentile(series, 99)
-    outliers = (series < lower_percentile) | (series > upper_percentile)
-
-    outlier_pct = outliers.sum() / len(series)
-
-    if outlier_pct > threshold:
-        print("Significant outliers detected, not capping values.")
-        return series  # Ne pas appliquer le cap si les valeurs aberrantes sont significatives
-    else:
-        return np.clip(series, lower_percentile, upper_percentile)
-
-def cap_outliers(df):
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    for col in numeric_cols:
-            df[col] = cap_values(df[col])
-    return df
 
 
 # Fonction pour imputer les valeurs manquantes
@@ -727,15 +704,8 @@ def drop_constant_columns(df):
     return df.drop(columns=constant_columns), len(constant_columns)
 
 
-def remove_low_correlation_features(df, target, threshold=0.01):
-    correlation_matrix = df.corr()
-    target_corr = correlation_matrix[target].abs()
-    low_corr_features = target_corr[target_corr < threshold].index
-    return df.drop(columns=low_corr_features), low_corr_features
-
-
 def remove_highly_correlated_features(df, threshold=0.9):
-    corr_matrix = df.corr().abs()
+    corr_matrix = df.corr(method='pearson').abs()
     upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
     to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
     return df.drop(columns=to_drop), to_drop
@@ -1020,9 +990,9 @@ class FeatureEngineeringPipeline:
         # Appel de la fonction de configuration multiprocessing
         set_multiprocessing()
         
-    def fit(self):
+    def fit(self, train_df):
         # Charger les données d'entraînement à partir du fichier CSV
-        train_df = pd.read_csv(os.path.join(self.data_directory, "train.csv"))
+        #train_df = pd.read_csv(os.path.join(self.data_directory, "train.csv"))
 
         # Initial feature engineering
         train_df = feature_engineering(train_df)
@@ -1070,6 +1040,8 @@ class FeatureEngineeringPipeline:
         # Additional ratio features
         train_df = add_ratios_features(train_df)
 
+        train_df.set_index('SK_ID_CURR', inplace=True)
+
         # Remplacer les valeurs infinies par NaN après ajout des caractéristiques
         train_df = replace_infinite_values(train_df)
 
@@ -1077,8 +1049,6 @@ class FeatureEngineeringPipeline:
         train_df, dropped_columns_count = drop_high_missing_columns(train_df)
         print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {train_df.shape[1]}")
 
-        train_df = cap_outliers(train_df)
-        print(f"Gestion des outliers - done")
 
         # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
         if self.data_directory == "data/Cleaned/Imputed/" and train_df.isnull().sum().sum() > 0:
@@ -1140,14 +1110,14 @@ class FeatureEngineeringPipeline:
             # Additional ratio features
             test_df = add_ratios_features(test_df)
 
+            test_df.set_index('SK_ID_CURR', inplace=True)
+
             # Remplacer les valeurs infinies par NaN après ajout des caractéristiques
             test_df = replace_infinite_values(test_df)
 
             # Nettoyage des données après le feature engineering
             test_df, dropped_columns_count = drop_high_missing_columns(test_df)
             print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {test_df.shape[1]}")
-
-            test_df = cap_outliers(test_df)
 
             # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
             if self.data_directory == "data/Cleaned/Imputed/" and test_df.isnull().sum().sum() > 0:
