@@ -34,8 +34,10 @@ warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
 
 def feature_engineering(df):
     """ Apply feature engineering to the dataframe. """
-    df = df[df['CODE_GENDER'] != 'XNA']  # 4 people with XNA code gender
-    df = df[df['AMT_INCOME_TOTAL'] < 20000000]  # Max income in test is 4M; train has a 117M value
+    #df = df[df['CODE_GENDER'] != 'XNA']  # 4 people with XNA code gender
+    df['CODE_GENDER'].replace('XNA', np.nan, inplace=True)
+    #df = df[df['AMT_INCOME_TOTAL'] < 20000000]  # Max income in test is 4M; train has a 117M value
+    df.loc[df['AMT_INCOME_TOTAL'] >= 20000000, 'AMT_INCOME_TOTAL'] = np.nan
     df['DAYS_EMPLOYED'].replace(365243, np.nan, inplace=True)
     df['DAYS_LAST_PHONE_CHANGE'].replace(0, np.nan, inplace=True)
 
@@ -643,12 +645,6 @@ def reduce_memory(df):
     print('Final memory usage is: {:.2f} MB - decreased by {:.1f}%'.format(end_mem, memory_reduction))
     return df
 
- # Fonction pour supprimer les colonnes avec plus de 50% de valeurs manquantes
-def drop_high_missing_columns(df, threshold=0.5):
-    missing_percentage = df.isnull().mean()
-    columns_to_drop = missing_percentage[missing_percentage > threshold].index
-    return df.drop(columns=columns_to_drop), len(columns_to_drop)
-
 
 # Fonction pour remplacer les valeurs infinies par NaN
 def replace_infinite_values(df):
@@ -1045,11 +1041,6 @@ class FeatureEngineeringPipeline:
         # Remplacer les valeurs infinies par NaN après ajout des caractéristiques
         train_df = replace_infinite_values(train_df)
 
-        # Nettoyage des données après le feature engineering
-        train_df, dropped_columns_count = drop_high_missing_columns(train_df)
-        print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {train_df.shape[1]}")
-
-
         # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
         if self.data_directory == "data/Cleaned/Imputed/" and train_df.isnull().sum().sum() > 0:
             train_df = impute_missing_values(train_df)
@@ -1114,10 +1105,6 @@ class FeatureEngineeringPipeline:
 
             # Remplacer les valeurs infinies par NaN après ajout des caractéristiques
             test_df = replace_infinite_values(test_df)
-
-            # Nettoyage des données après le feature engineering
-            test_df, dropped_columns_count = drop_high_missing_columns(test_df)
-            print(f"Colonnes supprimées: {dropped_columns_count}, Colonnes restantes: {test_df.shape[1]}")
 
             # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
             if self.data_directory == "data/Cleaned/Imputed/" and test_df.isnull().sum().sum() > 0:
