@@ -7,3 +7,6 @@ catboost==1.2.5
 evidently==0.4.27
 scikit-learn==1.5.0
 numpy==1.26.4
+fastapi==0.111.0
+fastapi-cli==0.0.4
+seaborn==0.13.2
