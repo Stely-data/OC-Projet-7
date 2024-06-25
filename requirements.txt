@@ -6,3 +6,4 @@ boto3==1.28.3
 catboost==1.2.5
 evidently==0.4.27
 scikit-learn==1.5.0
+numpy==1.26.4
