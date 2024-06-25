@@ -34,8 +34,19 @@ joblib_file = 'pipeline_credit_scoring_with_drift_detection.joblib'
 
 # Fonction pour re-sauvegarder le modèle sur Heroku
 def save_model_on_heroku():
+    # Chemin dynamique pour le fichier CSV
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(base_dir, 'data/Sources/application_train.csv')
+
     # Chargez les données d'entraînement
-    application_train = pd.read_csv('data/Sources/application_train.csv')
+    application_train = pd.read_csv(csv_path)
+
+    # Vérifiez si la colonne 'CODE_GENDER' est présente
+    if 'CODE_GENDER' in application_train.columns:
+        print("Colonne 'CODE_GENDER' trouvée dans les données.")
+    else:
+        print("Colonne 'CODE_GENDER' non trouvée dans les données.")
+        print("Colonnes disponibles : ", application_train.columns.tolist())
 
     # Initialisez et entraînez le modèle ici
     pipeline = Pipeline([
