@@ -2,12 +2,29 @@ import os
 from flask import Flask, request, jsonify
 import joblib
 import pandas as pd
+from catboost import CatBoostClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 from models import (
     PipelineWithDriftDetection, ThresholdClassifier,
     FeatureEngineeringPipelineWrapper, clean_column_names,
     replace_infinite_values, prepare_pip_data
+)
+
+# Meilleurs paramètres pour le modèle CatBoost
+best_params = {
+    'depth': 6,
+    'iterations': 1000,
+    'l2_leaf_reg': 2,
+    'learning_rate': 0.03
+}
+
+# Initialisation du modèle CatBoost avec les meilleurs paramètres
+catboost_model = CatBoostClassifier(
+    verbose=0,
+    thread_count=-1,
+    task_type="GPU",
+    **best_params
 )
 
 app = Flask(__name__)
@@ -23,7 +40,7 @@ def save_model_on_heroku():
     # Initialisez et entraînez le modèle ici
     pipeline = Pipeline([
         ('preprocessor', FunctionTransformer(prepare_pip_data, validate=False)),
-        ('classifier', ThresholdClassifier(catboost_model, threshold=best_threshold))
+        ('classifier', ThresholdClassifier(catboost_model, threshold=0.49))
     ])
 
     pipeline_with_drift = PipelineWithDriftDetection(pipeline, application_train)
