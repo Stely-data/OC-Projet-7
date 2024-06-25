@@ -4,8 +4,5 @@
 /.ipynb_checkpoints
 /__pycache__
 /catboost_info
-/mlruns
 /data
 data_drift_report_test.html
-requirements.txt
-pipeline_credit_scoring_with_drift_detection.joblib
