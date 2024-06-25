@@ -2,6 +2,7 @@ import os
 from flask import Flask, request, jsonify
 import joblib
 import pandas as pd
+from sklearn.pipeline import Pipeline
 from models import (
     PipelineWithDriftDetection, ThresholdClassifier,
     FeatureEngineeringPipelineWrapper, clean_column_names,
