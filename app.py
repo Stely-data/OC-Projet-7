@@ -1,13 +1,41 @@
+import os
 from flask import Flask, request, jsonify
 import joblib
 import pandas as pd
-import shap
-from models import PipelineWithDriftDetection, prepare_pip_data, ThresholdClassifier
+from models import (
+    PipelineWithDriftDetection, ThresholdClassifier,
+    FeatureEngineeringPipelineWrapper, clean_column_names,
+    replace_infinite_values, prepare_pip_data
+)
 
 app = Flask(__name__)
 
-# Charger le pipeline sauvegardé
-pipeline = joblib.load('pipeline_credit_scoring_with_drift_detection.joblib')
+# Chemin pour sauvegarder le fichier joblib
+joblib_file = 'pipeline_credit_scoring_with_drift_detection.joblib'
+
+# Fonction pour re-sauvegarder le modèle sur Heroku
+def save_model_on_heroku():
+    # Chargez les données d'entraînement
+    application_train = pd.read_csv('data/Sources/application_train.csv')
+
+    # Initialisez et entraînez le modèle ici
+    pipeline = Pipeline([
+        ('preprocessor', FunctionTransformer(prepare_pip_data, validate=False)),
+        ('classifier', ThresholdClassifier(catboost_model, threshold=best_threshold))
+    ])
+
+    pipeline_with_drift = PipelineWithDriftDetection(pipeline, application_train)
+    pipeline_with_drift.fit(application_train)
+
+    # Sauvegardez le modèle
+    joblib.dump(pipeline_with_drift, joblib_file)
+
+# Essayez de charger le fichier joblib existant
+try:
+    pipeline = joblib.load(joblib_file)
+except KeyError:
+    save_model_on_heroku()
+    pipeline = joblib.load(joblib_file)
 
 
 @app.route("/")
