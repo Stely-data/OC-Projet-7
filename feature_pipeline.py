@@ -68,16 +68,6 @@ def feature_engineering(df):
 
     return df
 
-def calculate_group_statistics(df, group_cols, target_col):
-    """ Calculate group statistics for a column. """
-    grouped_df = df.groupby(group_cols)[target_col].agg(['mean', 'std', 'median']).reset_index()
-    grouped_df.columns = group_cols + [f"{target_col}_MEAN", f"{target_col}_STD", f"{target_col}_MEDIAN"]
-    return grouped_df
-
-def apply_group_statistics(df, grouped_df, group_cols, target_col):
-    """ Apply group statistics to the dataframe. """
-    df = df.merge(grouped_df, on=group_cols, how='left')
-    return df
 
 def add_ratios_features(df):
     # CREDIT TO INCOME RATIO
@@ -117,9 +107,10 @@ def get_age_label(days_birth):
 
 # ------------------------- BUREAU PIPELINE -------------------------
 
-def get_bureau(path, num_rows= None):
+def get_bureau(path, sk_id_curr_list, num_rows= None):
     """ Process bureau.csv and bureau_balance.csv and return a pandas dataframe. """
     bureau = pd.read_csv(os.path.join(path, 'bureau.csv'), nrows= num_rows)
+    bureau = bureau[bureau['SK_ID_CURR'].isin(sk_id_curr_list)]
     # Credit duration and credit/account end date difference
     bureau['CREDIT_DURATION'] = -bureau['DAYS_CREDIT'] + bureau['DAYS_CREDIT_ENDDATE']
     bureau['ENDDATE_DIF'] = bureau['DAYS_CREDIT_ENDDATE'] - bureau['DAYS_ENDDATE_FACT']
@@ -130,6 +121,31 @@ def get_bureau(path, num_rows= None):
 
     # One-hot encoder
     bureau, categorical_cols = one_hot_encoder(bureau, nan_as_category= False)
+
+    # Liste des colonnes complètes attendues
+    expected_columns = [
+        'SK_ID_CURR', 'SK_ID_BUREAU', 'DAYS_CREDIT', 'CREDIT_DAY_OVERDUE', 'DAYS_CREDIT_ENDDATE',
+        'DAYS_ENDDATE_FACT', 'AMT_CREDIT_MAX_OVERDUE', 'CNT_CREDIT_PROLONG', 'AMT_CREDIT_SUM',
+        'AMT_CREDIT_SUM_DEBT', 'AMT_CREDIT_SUM_LIMIT', 'AMT_CREDIT_SUM_OVERDUE', 'DAYS_CREDIT_UPDATE',
+        'AMT_ANNUITY', 'CREDIT_ACTIVE_Active', 'CREDIT_ACTIVE_Bad debt', 'CREDIT_ACTIVE_Closed',
+        'CREDIT_ACTIVE_Sold', 'CREDIT_ACTIVE_nan', 'CREDIT_CURRENCY_currency 1',
+        'CREDIT_CURRENCY_currency 2', 'CREDIT_CURRENCY_currency 3', 'CREDIT_CURRENCY_currency 4',
+        'CREDIT_CURRENCY_nan', 'CREDIT_TYPE_Another type of loan', 'CREDIT_TYPE_Car loan',
+        'CREDIT_TYPE_Cash loan (non-earmarked)', 'CREDIT_TYPE_Consumer credit',
+        'CREDIT_TYPE_Credit card', 'CREDIT_TYPE_Interbank credit',
+        'CREDIT_TYPE_Loan for business development',
+        'CREDIT_TYPE_Loan for purchase of shares (margin lending)',
+        'CREDIT_TYPE_Loan for the purchase of equipment',
+        'CREDIT_TYPE_Loan for working capital replenishment',
+        'CREDIT_TYPE_Microloan', 'CREDIT_TYPE_Mobile operator loan', 'CREDIT_TYPE_Mortgage',
+        'CREDIT_TYPE_Real estate loan', 'CREDIT_TYPE_Unknown type of loan', 'CREDIT_TYPE_nan'
+    ]
+
+    # Ajouter les colonnes manquantes
+    for col in expected_columns:
+        if col not in bureau.columns:
+            bureau[col] = 0
+
     # Join bureau balance features
     bureau = bureau.merge(get_bureau_balance(path, num_rows), how='left', on='SK_ID_BUREAU')
     # Flag months with late payments (days past due)
@@ -182,6 +198,18 @@ def get_bureau(path, num_rows= None):
 def get_bureau_balance(path, num_rows= None):
     bb = pd.read_csv(os.path.join(path, 'bureau_balance.csv'), nrows= num_rows)
     bb, categorical_cols = one_hot_encoder(bb, nan_as_category= False)
+
+    # Liste des colonnes complètes attendues
+    expected_columns = [
+        'SK_ID_BUREAU', 'MONTHS_BALANCE', 'STATUS_0', 'STATUS_1', 'STATUS_2', 'STATUS_3', 'STATUS_4',
+        'STATUS_5', 'STATUS_C', 'STATUS_X', 'STATUS_nan'
+    ]
+
+    # Ajouter les colonnes manquantes
+    for col in expected_columns:
+        if col not in bb.columns:
+            bb[col] = 0
+
     # Calculate rate for each category with decay
     bb_processed = bb.groupby('SK_ID_BUREAU')[categorical_cols].mean().reset_index()
     # Min, Max, Count and mean duration of payments (months)
@@ -192,9 +220,11 @@ def get_bureau_balance(path, num_rows= None):
 
 # ------------------------- PREVIOUS PIPELINE -------------------------
 
-def get_previous_applications(path, num_rows= None):
+def get_previous_applications(path, sk_id_curr_list, num_rows= None):
     """ Process previous_application.csv and return a pandas dataframe. """
     prev = pd.read_csv(os.path.join(path, 'previous_application.csv'), nrows= num_rows)
+    prev = prev[prev['SK_ID_CURR'].isin(sk_id_curr_list)]
+
     pay = pd.read_csv(os.path.join(path, 'installments_payments.csv'), nrows= num_rows)
 
     # One-hot encode most important categorical features
@@ -203,6 +233,40 @@ def get_previous_applications(path, num_rows= None):
         'NAME_TYPE_SUITE', 'NAME_YIELD_GROUP', 'PRODUCT_COMBINATION',
         'NAME_PRODUCT_TYPE', 'NAME_CLIENT_TYPE']
     prev, categorical_cols = one_hot_encoder(prev, ohe_columns, nan_as_category= False)
+
+    # Liste des colonnes complètes attendues
+    expected_columns = [
+        'SK_ID_PREV', 'SK_ID_CURR', 'AMT_ANNUITY', 'AMT_APPLICATION', 'AMT_CREDIT', 'AMT_DOWN_PAYMENT',
+        'AMT_GOODS_PRICE', 'WEEKDAY_APPR_PROCESS_START', 'HOUR_APPR_PROCESS_START', 'FLAG_LAST_APPL_PER_CONTRACT',
+        'NFLAG_LAST_APPL_IN_DAY', 'RATE_DOWN_PAYMENT', 'RATE_INTEREST_PRIMARY', 'RATE_INTEREST_PRIVILEGED',
+        'NAME_CASH_LOAN_PURPOSE', 'DAYS_DECISION', 'NAME_PAYMENT_TYPE', 'CODE_REJECT_REASON', 'NAME_GOODS_CATEGORY',
+        'NAME_PORTFOLIO', 'SELLERPLACE_AREA', 'NAME_SELLER_INDUSTRY', 'CNT_PAYMENT', 'DAYS_FIRST_DRAWING',
+        'DAYS_FIRST_DUE', 'DAYS_LAST_DUE_1ST_VERSION', 'DAYS_LAST_DUE', 'DAYS_TERMINATION',
+        'NFLAG_INSURED_ON_APPROVAL', 'NAME_CONTRACT_STATUS_Approved', 'NAME_CONTRACT_STATUS_Canceled',
+        'NAME_CONTRACT_STATUS_Refused', 'NAME_CONTRACT_STATUS_Unused offer', 'NAME_CONTRACT_TYPE_Cash loans',
+        'NAME_CONTRACT_TYPE_Consumer loans', 'NAME_CONTRACT_TYPE_Revolving loans', 'NAME_CONTRACT_TYPE_XNA',
+        'CHANNEL_TYPE_AP+ (Cash loan)', 'CHANNEL_TYPE_Car dealer', 'CHANNEL_TYPE_Channel of corporate sales',
+        'CHANNEL_TYPE_Contact center', 'CHANNEL_TYPE_Country-wide', 'CHANNEL_TYPE_Credit and cash offices',
+        'CHANNEL_TYPE_Regional / Local', 'CHANNEL_TYPE_Stone', 'NAME_TYPE_SUITE_Children', 'NAME_TYPE_SUITE_Family',
+        'NAME_TYPE_SUITE_Group of people', 'NAME_TYPE_SUITE_Other_A', 'NAME_TYPE_SUITE_Other_B',
+        'NAME_TYPE_SUITE_Spouse, partner', 'NAME_TYPE_SUITE_Unaccompanied', 'NAME_YIELD_GROUP_XNA',
+        'NAME_YIELD_GROUP_high', 'NAME_YIELD_GROUP_low_action', 'NAME_YIELD_GROUP_low_normal',
+        'NAME_YIELD_GROUP_middle', 'PRODUCT_COMBINATION_Card Street', 'PRODUCT_COMBINATION_Card X-Sell',
+        'PRODUCT_COMBINATION_Cash', 'PRODUCT_COMBINATION_Cash Street: high', 'PRODUCT_COMBINATION_Cash Street: low',
+        'PRODUCT_COMBINATION_Cash Street: middle', 'PRODUCT_COMBINATION_Cash X-Sell: high',
+        'PRODUCT_COMBINATION_Cash X-Sell: low', 'PRODUCT_COMBINATION_Cash X-Sell: middle',
+        'PRODUCT_COMBINATION_POS household with interest', 'PRODUCT_COMBINATION_POS household without interest',
+        'PRODUCT_COMBINATION_POS industry with interest', 'PRODUCT_COMBINATION_POS industry without interest',
+        'PRODUCT_COMBINATION_POS mobile with interest', 'PRODUCT_COMBINATION_POS mobile without interest',
+        'PRODUCT_COMBINATION_POS other with interest', 'PRODUCT_COMBINATION_POS others without interest',
+        'NAME_PRODUCT_TYPE_XNA', 'NAME_PRODUCT_TYPE_walk-in', 'NAME_PRODUCT_TYPE_x-sell', 'NAME_CLIENT_TYPE_New',
+        'NAME_CLIENT_TYPE_Refreshed', 'NAME_CLIENT_TYPE_Repeater', 'NAME_CLIENT_TYPE_XNA'
+    ]
+
+    # Ajouter les colonnes manquantes
+    for col in expected_columns:
+        if col not in prev.columns:
+            prev[col] = 0
 
     # Feature engineering: ratios and difference
     prev['APPLICATION_CREDIT_DIFF'] = prev['AMT_APPLICATION'] - prev['AMT_CREDIT']
@@ -281,10 +345,26 @@ def get_previous_applications(path, num_rows= None):
 
 # ------------------------- POS-CASH PIPELINE -------------------------
 
-def get_pos_cash(path, num_rows= None):
+def get_pos_cash(path, sk_id_curr_list, num_rows= None):
     """ Process POS_CASH_balance.csv and return a pandas dataframe. """
     pos = pd.read_csv(os.path.join(path, 'POS_CASH_balance.csv'), nrows= num_rows)
+    pos = pos[pos['SK_ID_CURR'].isin(sk_id_curr_list)]
     pos, categorical_cols = one_hot_encoder(pos, nan_as_category= False)
+
+    # Liste des colonnes complètes attendues
+    expected_columns = [
+        'SK_ID_PREV', 'SK_ID_CURR', 'MONTHS_BALANCE', 'CNT_INSTALMENT', 'CNT_INSTALMENT_FUTURE',
+        'SK_DPD', 'SK_DPD_DEF', 'NAME_CONTRACT_STATUS_Active', 'NAME_CONTRACT_STATUS_Amortized debt',
+        'NAME_CONTRACT_STATUS_Approved', 'NAME_CONTRACT_STATUS_Canceled', 'NAME_CONTRACT_STATUS_Completed',
+        'NAME_CONTRACT_STATUS_Demand', 'NAME_CONTRACT_STATUS_Returned to the store', 'NAME_CONTRACT_STATUS_Signed',
+        'NAME_CONTRACT_STATUS_XNA', 'NAME_CONTRACT_STATUS_nan'
+    ]
+
+    # Ajouter les colonnes manquantes
+    for col in expected_columns:
+        if col not in pos.columns:
+            pos[col] = 0
+
     # Flag months with late payment
     pos['LATE_PAYMENT'] = pos['SK_DPD'].apply(lambda x: 1 if x > 0 else 0)
     # Aggregate by SK_ID_CURR
@@ -320,18 +400,14 @@ def get_pos_cash(path, num_rows= None):
     gp_mean = gp.groupby('SK_ID_CURR').mean().reset_index()
     pos_agg = pd.merge(pos_agg, gp_mean[['SK_ID_CURR','LATE_PAYMENT_SUM']], on='SK_ID_CURR', how='left')
 
-    # Drop some useless categorical features
-    drop_features = [
-        'POS_NAME_CONTRACT_STATUS_Canceled_MEAN', 'POS_NAME_CONTRACT_STATUS_Amortized debt_MEAN',
-        'POS_NAME_CONTRACT_STATUS_XNA_MEAN']
-    pos_agg.drop(drop_features, axis=1, inplace=True)
     return pos_agg
 
 # ------------------------- INSTALLMENTS PIPELINE -------------------------
 
-def get_installment_payments(path, num_rows= None):
+def get_installment_payments(path, sk_id_curr_list, num_rows= None):
     """ Process installments_payments.csv and return a pandas dataframe. """
     pay = pd.read_csv(os.path.join(path, 'installments_payments.csv'), nrows= num_rows)
+    pay = pay[pay['SK_ID_CURR'].isin(sk_id_curr_list)]
     # Group payments and get Payment difference
     pay = do_sum(pay, ['SK_ID_PREV', 'NUM_INSTALMENT_NUMBER'], 'AMT_PAYMENT', 'AMT_PAYMENT_GROUPED')
     pay['PAYMENT_DIFFERENCE'] = pay['AMT_INSTALMENT'] - pay['AMT_PAYMENT_GROUPED']
@@ -414,10 +490,29 @@ def installments_last_loan_features(gr):
 
 # ------------------------- CREDIT CARD PIPELINE -------------------------
 
-def get_credit_card(path, num_rows= None):
+def get_credit_card(path, sk_id_curr_list, num_rows= None):
     """ Process credit_card_balance.csv and return a pandas dataframe. """
     cc = pd.read_csv(os.path.join(path, 'credit_card_balance.csv'), nrows= num_rows)
+    cc = cc[cc['SK_ID_CURR'].isin(sk_id_curr_list)]
     cc, cat_cols = one_hot_encoder(cc, nan_as_category=False)
+
+    # Liste des colonnes complètes attendues
+    expected_columns = [
+        'SK_ID_PREV', 'SK_ID_CURR', 'MONTHS_BALANCE', 'AMT_BALANCE', 'AMT_CREDIT_LIMIT_ACTUAL',
+        'AMT_DRAWINGS_ATM_CURRENT', 'AMT_DRAWINGS_CURRENT', 'AMT_DRAWINGS_OTHER_CURRENT', 'AMT_DRAWINGS_POS_CURRENT',
+        'AMT_INST_MIN_REGULARITY', 'AMT_PAYMENT_CURRENT', 'AMT_PAYMENT_TOTAL_CURRENT', 'AMT_RECEIVABLE_PRINCIPAL',
+        'AMT_RECIVABLE', 'AMT_TOTAL_RECEIVABLE', 'CNT_DRAWINGS_ATM_CURRENT', 'CNT_DRAWINGS_CURRENT',
+        'CNT_DRAWINGS_OTHER_CURRENT', 'CNT_DRAWINGS_POS_CURRENT', 'CNT_INSTALMENT_MATURE_CUM', 'SK_DPD', 'SK_DPD_DEF',
+        'NAME_CONTRACT_STATUS_Active', 'NAME_CONTRACT_STATUS_Approved', 'NAME_CONTRACT_STATUS_Completed',
+        'NAME_CONTRACT_STATUS_Demand', 'NAME_CONTRACT_STATUS_Refused', 'NAME_CONTRACT_STATUS_Sent proposal',
+        'NAME_CONTRACT_STATUS_Signed', 'NAME_CONTRACT_STATUS_nan'
+    ]
+
+    # Ajouter les colonnes manquantes
+    for col in expected_columns:
+        if col not in cc.columns:
+            cc[col] = 0
+
     cc.rename(columns={'AMT_RECIVABLE': 'AMT_RECEIVABLE'}, inplace=True)
     # Amount used from limit
     cc['LIMIT_USE'] = cc['AMT_BALANCE'] / cc['AMT_CREDIT_LIMIT_ACTUAL']
@@ -978,7 +1073,6 @@ def set_multiprocessing():
 # Fonction principale
 class FeatureEngineeringPipeline:
     def __init__(self, data_directory="data/Cleaned/", low_corr_threshold=0.01):
-        self.group_statistics = {}
         self.train_columns = None  # Pour stocker les colonnes du train
         self.label_encoders = {}  # Pour stocker les label encoders
         self.low_corr_threshold = low_corr_threshold
@@ -993,42 +1087,35 @@ class FeatureEngineeringPipeline:
         # Initial feature engineering
         train_df = feature_engineering(train_df)
 
-        print(f"feature_engineering - done")
+        sk_id_curr_list = train_df['SK_ID_CURR'].unique()
 
-        # Group statistics
-        group_cols = ['ORGANIZATION_TYPE', 'NAME_EDUCATION_TYPE', 'OCCUPATION_TYPE', 'AGE_RANGE', 'CODE_GENDER']
-        target_cols = ['EXT_SOURCES_MEAN', 'AMT_INCOME_TOTAL', 'CREDIT_TO_ANNUITY_RATIO', 'AMT_CREDIT', 'AMT_ANNUITY']
-        self.group_statistics = {}
-        for target_col in target_cols:
-            grouped_df = calculate_group_statistics(train_df, group_cols, target_col)
-            self.group_statistics[target_col] = grouped_df
-            train_df = apply_group_statistics(train_df, grouped_df, group_cols, target_col)
+        print(f"feature_engineering - done")
 
         # Load and merge additional features
         with timer("Bureau and bureau_balance data"):
-            bureau_df = get_bureau(self.data_directory)
+            bureau_df = get_bureau(self.data_directory, sk_id_curr_list)
             train_df = pd.merge(train_df, bureau_df, on='SK_ID_CURR', how='left')
             del bureau_df
             gc.collect()
 
         with timer("previous_application"):
-            prev_df = get_previous_applications(self.data_directory)
+            prev_df = get_previous_applications(self.data_directory, sk_id_curr_list)
             train_df = pd.merge(train_df, prev_df, on='SK_ID_CURR', how='left')
             del prev_df
             gc.collect()
 
         with timer("previous applications balances"):
-            pos = get_pos_cash(self.data_directory)
+            pos = get_pos_cash(self.data_directory, sk_id_curr_list)
             train_df = pd.merge(train_df, pos, on='SK_ID_CURR', how='left')
             del pos
             gc.collect()
 
-            ins = get_installment_payments(self.data_directory)
+            ins = get_installment_payments(self.data_directory, sk_id_curr_list)
             train_df = pd.merge(train_df, ins, on='SK_ID_CURR', how='left')
             del ins
             gc.collect()
 
-            cc = get_credit_card(self.data_directory)
+            cc = get_credit_card(self.data_directory, sk_id_curr_list)
             train_df = pd.merge(train_df, cc, on='SK_ID_CURR', how='left')
             del cc
             gc.collect()
@@ -1064,36 +1151,33 @@ class FeatureEngineeringPipeline:
         # Initial feature engineering
         test_df = feature_engineering(test_df)
 
-        # Apply stored group statistics
-        group_cols = ['ORGANIZATION_TYPE', 'NAME_EDUCATION_TYPE', 'OCCUPATION_TYPE', 'AGE_RANGE', 'CODE_GENDER']
-        for target_col, grouped_df in self.group_statistics.items():
-            test_df = apply_group_statistics(test_df, grouped_df, group_cols, target_col)
+        sk_id_curr_list = test_df['SK_ID_CURR'].unique()
 
         # Load and merge additional features
         with timer("Bureau and bureau_balance data"):
-            bureau_df = get_bureau(self.data_directory)
+            bureau_df = get_bureau(self.data_directory, sk_id_curr_list)
             test_df = pd.merge(test_df, bureau_df, on='SK_ID_CURR', how='left')
             del bureau_df
             gc.collect()
 
         with timer("previous_application"):
-            prev_df = get_previous_applications(self.data_directory)
+            prev_df = get_previous_applications(self.data_directory, sk_id_curr_list)
             test_df = pd.merge(test_df, prev_df, on='SK_ID_CURR', how='left')
             del prev_df
             gc.collect()
 
         with timer("previous applications balances"):
-            pos = get_pos_cash(self.data_directory)
+            pos = get_pos_cash(self.data_directory, sk_id_curr_list)
             test_df = pd.merge(test_df, pos, on='SK_ID_CURR', how='left')
             del pos
             gc.collect()
 
-            ins = get_installment_payments(self.data_directory)
+            ins = get_installment_payments(self.data_directory, sk_id_curr_list)
             test_df = pd.merge(test_df, ins, on='SK_ID_CURR', how='left')
             del ins
             gc.collect()
 
-            cc = get_credit_card(self.data_directory)
+            cc = get_credit_card(self.data_directory, sk_id_curr_list)
             test_df = pd.merge(test_df, cc, on='SK_ID_CURR', how='left')
             del cc
             gc.collect()
@@ -1141,23 +1225,18 @@ class FeatureEngineeringPipeline:
     def save(self, directory):
         """ Save the group statistics and train columns to files. """
         os.makedirs(directory, exist_ok=True)
-        with open(os.path.join(directory, 'group_statistics.pkl'), 'wb') as f:
-            pickle.dump(self.group_statistics, f)
         with open(os.path.join(directory, 'train_columns.pkl'), 'wb') as f:
             pickle.dump(self.train_columns, f)
         with open(os.path.join(directory, 'label_encoders.pkl'), 'wb') as f:
             pickle.dump(self.label_encoders, f)
 
         # Libérer de la mémoire après la sauvegarde
-        del self.group_statistics
         del self.train_columns
         del self.label_encoders
         gc.collect()
 
     def load(self, directory):
         """ Load the group statistics and train columns from files. """
-        with open(os.path.join(directory, 'group_statistics.pkl'), 'rb') as f:
-            self.group_statistics = pickle.load(f)
         with open(os.path.join(directory, 'train_columns.pkl'), 'rb') as f:
             self.train_columns = pickle.load(f)
         with open(os.path.join(directory, 'label_encoders.pkl'), 'rb') as f:
