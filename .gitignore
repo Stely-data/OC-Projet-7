@@ -4,5 +4,11 @@
 /.ipynb_checkpoints
 /__pycache__
 /catboost_info
-/data
 data_drift_report_test.html
+data/Featured/features-svg.csv
+data/Cleaned/Imputed
+data/Sources
+data/Featured/test_imputed_transformed.csv
+data/Featured/test_transformed.csv
+data/Featured/train_imputed_transformed.csv
+data/Featured/train_transformed.csv
