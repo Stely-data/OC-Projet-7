@@ -16,13 +16,15 @@ import numpy as np
 import pandas as pd
 from contextlib import contextmanager
 import multiprocessing as mp
-import gc
 from multiprocessing import Pool, cpu_count
 from functools import partial
 from scipy.stats import kurtosis, iqr, skew
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import LabelEncoder
 import pickle
+from sklearn.feature_selection import RFECV
+from catboost import CatBoostClassifier
+from sklearn.utils.class_weight import compute_class_weight
 import warnings
 
 # Ignore future warnings
@@ -107,10 +109,16 @@ def get_age_label(days_birth):
 
 # ------------------------- BUREAU PIPELINE -------------------------
 
-def get_bureau(path, sk_id_curr_list, num_rows= None):
+def get_bureau(path, sk_id_curr_list, impute):
     """ Process bureau.csv and bureau_balance.csv and return a pandas dataframe. """
-    bureau = pd.read_csv(os.path.join(path, 'bureau.csv'), nrows= num_rows)
+    bureau = pd.read_csv(os.path.join(path, 'bureau.csv'))
     bureau = bureau[bureau['SK_ID_CURR'].isin(sk_id_curr_list)]
+
+    bureau = replace_infinite_values(bureau)
+
+    if impute:
+        bureau = impute_missing_values(bureau)
+
     # Credit duration and credit/account end date difference
     bureau['CREDIT_DURATION'] = -bureau['DAYS_CREDIT'] + bureau['DAYS_CREDIT_ENDDATE']
     bureau['ENDDATE_DIF'] = bureau['DAYS_CREDIT_ENDDATE'] - bureau['DAYS_ENDDATE_FACT']
@@ -147,7 +155,7 @@ def get_bureau(path, sk_id_curr_list, num_rows= None):
             bureau[col] = 0
 
     # Join bureau balance features
-    bureau = bureau.merge(get_bureau_balance(path, num_rows), how='left', on='SK_ID_BUREAU')
+    bureau = bureau.merge(get_bureau_balance(path, impute), how='left', on='SK_ID_BUREAU')
     # Flag months with late payments (days past due)
     bureau['STATUS_12345'] = 0
     for i in range(1,6):
@@ -195,8 +203,8 @@ def get_bureau(path, sk_id_curr_list, num_rows= None):
     return agg_bureau
 
 
-def get_bureau_balance(path, num_rows= None):
-    bb = pd.read_csv(os.path.join(path, 'bureau_balance.csv'), nrows= num_rows)
+def get_bureau_balance(path, impute):
+    bb = pd.read_csv(os.path.join(path, 'bureau_balance.csv'))
     bb, categorical_cols = one_hot_encoder(bb, nan_as_category= False)
 
     # Liste des colonnes complètes attendues
@@ -210,6 +218,11 @@ def get_bureau_balance(path, num_rows= None):
         if col not in bb.columns:
             bb[col] = 0
 
+    bb = replace_infinite_values(bb)
+
+    if impute:
+        bb = impute_missing_values(bb)
+
     # Calculate rate for each category with decay
     bb_processed = bb.groupby('SK_ID_BUREAU')[categorical_cols].mean().reset_index()
     # Min, Max, Count and mean duration of payments (months)
@@ -220,12 +233,23 @@ def get_bureau_balance(path, num_rows= None):
 
 # ------------------------- PREVIOUS PIPELINE -------------------------
 
-def get_previous_applications(path, sk_id_curr_list, num_rows= None):
+def get_previous_applications(path, sk_id_curr_list, impute):
     """ Process previous_application.csv and return a pandas dataframe. """
-    prev = pd.read_csv(os.path.join(path, 'previous_application.csv'), nrows= num_rows)
+    prev = pd.read_csv(os.path.join(path, 'previous_application.csv'))
     prev = prev[prev['SK_ID_CURR'].isin(sk_id_curr_list)]
 
-    pay = pd.read_csv(os.path.join(path, 'installments_payments.csv'), nrows= num_rows)
+    prev = replace_infinite_values(prev)
+
+    if impute:
+        prev = impute_missing_values(prev)
+
+    pay = pd.read_csv(os.path.join(path, 'installments_payments.csv'))
+
+    pay = replace_infinite_values(pay)
+
+    if impute:
+        pay = impute_missing_values(pay)
+
 
     # One-hot encode most important categorical features
     ohe_columns = [
@@ -345,10 +369,17 @@ def get_previous_applications(path, sk_id_curr_list, num_rows= None):
 
 # ------------------------- POS-CASH PIPELINE -------------------------
 
-def get_pos_cash(path, sk_id_curr_list, num_rows= None):
+def get_pos_cash(path, sk_id_curr_list, impute):
     """ Process POS_CASH_balance.csv and return a pandas dataframe. """
-    pos = pd.read_csv(os.path.join(path, 'POS_CASH_balance.csv'), nrows= num_rows)
+    pos = pd.read_csv(os.path.join(path, 'POS_CASH_balance.csv'))
     pos = pos[pos['SK_ID_CURR'].isin(sk_id_curr_list)]
+
+    pos = replace_infinite_values(pos)
+
+    if impute:
+        pos = impute_missing_values(pos)
+
+
     pos, categorical_cols = one_hot_encoder(pos, nan_as_category= False)
 
     # Liste des colonnes complètes attendues
@@ -404,10 +435,16 @@ def get_pos_cash(path, sk_id_curr_list, num_rows= None):
 
 # ------------------------- INSTALLMENTS PIPELINE -------------------------
 
-def get_installment_payments(path, sk_id_curr_list, num_rows= None):
+def get_installment_payments(path, sk_id_curr_list, impute):
     """ Process installments_payments.csv and return a pandas dataframe. """
-    pay = pd.read_csv(os.path.join(path, 'installments_payments.csv'), nrows= num_rows)
+    pay = pd.read_csv(os.path.join(path, 'installments_payments.csv'))
     pay = pay[pay['SK_ID_CURR'].isin(sk_id_curr_list)]
+
+    pay = replace_infinite_values(pay)
+
+    if impute:
+        pay = impute_missing_values(pay)
+
     # Group payments and get Payment difference
     pay = do_sum(pay, ['SK_ID_PREV', 'NUM_INSTALMENT_NUMBER'], 'AMT_PAYMENT', 'AMT_PAYMENT_GROUPED')
     pay['PAYMENT_DIFFERENCE'] = pay['AMT_INSTALMENT'] - pay['AMT_PAYMENT_GROUPED']
@@ -490,10 +527,16 @@ def installments_last_loan_features(gr):
 
 # ------------------------- CREDIT CARD PIPELINE -------------------------
 
-def get_credit_card(path, sk_id_curr_list, num_rows= None):
+def get_credit_card(path, sk_id_curr_list, impute):
     """ Process credit_card_balance.csv and return a pandas dataframe. """
-    cc = pd.read_csv(os.path.join(path, 'credit_card_balance.csv'), nrows= num_rows)
+    cc = pd.read_csv(os.path.join(path, 'credit_card_balance.csv'))
     cc = cc[cc['SK_ID_CURR'].isin(sk_id_curr_list)]
+
+    cc = replace_infinite_values(cc)
+
+    if impute:
+        cc = impute_missing_values(cc)
+
     cc, cat_cols = one_hot_encoder(cc, nan_as_category=False)
 
     # Liste des colonnes complètes attendues
@@ -569,32 +612,6 @@ def group(df_to_agg, prefix, aggregations, aggregate_by= 'SK_ID_CURR'):
     return agg_df.reset_index()
 
 
-def do_mean(df, group_cols, counted, agg_name):
-    gp = df[group_cols + [counted]].groupby(group_cols)[counted].mean().reset_index().rename(
-        columns={counted: agg_name})
-    df = df.merge(gp, on=group_cols, how='left')
-    del gp
-    gc.collect()
-    return df
-
-
-def do_median(df, group_cols, counted, agg_name):
-    gp = df[group_cols + [counted]].groupby(group_cols)[counted].median().reset_index().rename(
-        columns={counted: agg_name})
-    df = df.merge(gp, on=group_cols, how='left')
-    del gp
-    gc.collect()
-    return df
-
-
-def do_std(df, group_cols, counted, agg_name):
-    gp = df[group_cols + [counted]].groupby(group_cols)[counted].std().reset_index().rename(
-        columns={counted: agg_name})
-    df = df.merge(gp, on=group_cols, how='left')
-    del gp
-    gc.collect()
-    return df
-
 
 def do_sum(df, group_cols, counted, agg_name):
     gp = df[group_cols + [counted]].groupby(group_cols)[counted].sum().reset_index().rename(
@@ -613,32 +630,6 @@ def one_hot_encoder(df, categorical_columns=None, nan_as_category=True):
     df = pd.get_dummies(df, columns=categorical_columns, dummy_na=nan_as_category)
     categorical_columns = [c for c in df.columns if c not in original_columns]
     return df, categorical_columns
-
-
-def label_encoder(df, categorical_columns=None):
-    """Encode categorical values as integers (0,1,2,3...) with pandas.factorize. """
-    if not categorical_columns:
-        categorical_columns = [col for col in df.columns if df[col].dtype == 'object']
-    for col in categorical_columns:
-        df[col], uniques = pd.factorize(df[col])
-    return df, categorical_columns
-
-
-def add_features(feature_name, aggs, features, feature_names, groupby):
-    feature_names.extend(['{}_{}'.format(feature_name, agg) for agg in aggs])
-
-    for agg in aggs:
-        if agg == 'kurt':
-            agg_func = kurtosis
-        elif agg == 'iqr':
-            agg_func = iqr
-        else:
-            agg_func = agg
-
-        g = groupby[feature_name].agg(agg_func).reset_index().rename(index=str,
-                                                                     columns={feature_name: '{}_{}'.format(feature_name,agg)})
-        features = features.merge(g, on='SK_ID_CURR', how='left')
-    return features, feature_names
 
 
 def add_features_in_group(features, gr_, feature_name, aggs, prefix):
@@ -790,16 +781,26 @@ def apply_label_encoding(df, label_encoders):
     return df
 
 
+# Fonction pour supprimer les colonnes avec plus de 50% de valeurs manquantes
+def drop_high_missing_columns(df, threshold=0.5):
+    missing_percentage = df.isnull().mean()
+    columns_to_drop = missing_percentage[missing_percentage > threshold].index
+    print(f"Variables avec + de 50% de valeurs manquantes: {len(columns_to_drop)}")
+    return df.drop(columns=columns_to_drop)
+
+
 def drop_constant_columns(df):
     constant_columns = [col for col in df.columns if df[col].nunique() == 1]
-    return df.drop(columns=constant_columns), len(constant_columns)
+    print(f"Colonnes supprimées (Constantes): {len(constant_columns)}")
+    return df.drop(columns=constant_columns)
 
 
 def remove_highly_correlated_features(df, threshold=0.9):
     corr_matrix = df.corr(method='pearson').abs()
     upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
     to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
-    return df.drop(columns=to_drop), to_drop
+    print(f"Colonnes supprimées (hautement corrélées): {len(to_drop)}")
+    return df.drop(columns=to_drop)
 
 # ------------------------- CONFIGURATIONS -------------------------
 
@@ -1072,17 +1073,20 @@ def set_multiprocessing():
 
 # Fonction principale
 class FeatureEngineeringPipeline:
-    def __init__(self, data_directory="data/Cleaned/", low_corr_threshold=0.01):
+    def __init__(self, data_directory="data/Sources/", impute=False, low_corr_threshold=0.01):
         self.train_columns = None  # Pour stocker les colonnes du train
         self.label_encoders = {}  # Pour stocker les label encoders
         self.low_corr_threshold = low_corr_threshold
         self.data_directory = data_directory  # Répertoire des données
+        self.impute = impute
         # Appel de la fonction de configuration multiprocessing
         set_multiprocessing()
         
     def fit(self, train_df):
-        # Charger les données d'entraînement à partir du fichier CSV
-        #train_df = pd.read_csv(os.path.join(self.data_directory, "train.csv"))
+        # Prepare data
+        train_df = replace_infinite_values(train_df)
+        if self.impute:
+            train_df = impute_missing_values(train_df)
 
         # Initial feature engineering
         train_df = feature_engineering(train_df)
@@ -1093,29 +1097,29 @@ class FeatureEngineeringPipeline:
 
         # Load and merge additional features
         with timer("Bureau and bureau_balance data"):
-            bureau_df = get_bureau(self.data_directory, sk_id_curr_list)
+            bureau_df = get_bureau(self.data_directory, sk_id_curr_list, self.impute)
             train_df = pd.merge(train_df, bureau_df, on='SK_ID_CURR', how='left')
             del bureau_df
             gc.collect()
 
         with timer("previous_application"):
-            prev_df = get_previous_applications(self.data_directory, sk_id_curr_list)
+            prev_df = get_previous_applications(self.data_directory, sk_id_curr_list, self.impute)
             train_df = pd.merge(train_df, prev_df, on='SK_ID_CURR', how='left')
             del prev_df
             gc.collect()
 
         with timer("previous applications balances"):
-            pos = get_pos_cash(self.data_directory, sk_id_curr_list)
+            pos = get_pos_cash(self.data_directory, sk_id_curr_list, self.impute)
             train_df = pd.merge(train_df, pos, on='SK_ID_CURR', how='left')
             del pos
             gc.collect()
 
-            ins = get_installment_payments(self.data_directory, sk_id_curr_list)
+            ins = get_installment_payments(self.data_directory, sk_id_curr_list, self.impute)
             train_df = pd.merge(train_df, ins, on='SK_ID_CURR', how='left')
             del ins
             gc.collect()
 
-            cc = get_credit_card(self.data_directory, sk_id_curr_list)
+            cc = get_credit_card(self.data_directory, sk_id_curr_list, self.impute)
             train_df = pd.merge(train_df, cc, on='SK_ID_CURR', how='left')
             del cc
             gc.collect()
@@ -1125,29 +1129,55 @@ class FeatureEngineeringPipeline:
 
         train_df.set_index('SK_ID_CURR', inplace=True)
 
-        # Remplacer les valeurs infinies par NaN après ajout des caractéristiques
-        train_df = replace_infinite_values(train_df)
-
         # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
-        if self.data_directory == "data/Cleaned/Imputed/" and train_df.isnull().sum().sum() > 0:
+        if self.impute and train_df.isnull().sum().sum() > 0:
             train_df = impute_missing_values(train_df)
             print(f"Gestion des valeurs manquantes - done")
 
         # Suppression des colonnes constantes
-        train_df, constant_columns_count = drop_constant_columns(train_df)
-        print(f"Colonnes supprimées (constantes): {constant_columns_count}, Colonnes restantes: {train_df.shape[1]}")
+        train_df = drop_constant_columns(train_df)
 
         # Encodage des variables catégorielles
         train_df, self.label_encoders = encode_categorical_features(train_df)
+
+        # Supprimer les colonnes avec plus de 50% de valeurs manquantes
+        train_df = drop_high_missing_columns(train_df)
+
+        # Suppression des variables hautement corrélées
+        train_df = remove_highly_correlated_features(train_df, threshold=0.9)
+
+        #RFECV
+        X = train_df.drop(columns=['TARGET'])
+        y = train_df['TARGET']
+
+        class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y), y=y)
+        class_weights_catboost = class_weights.tolist()
+        catboost_model = CatBoostClassifier(verbose=0, class_weights=class_weights_catboost, thread_count=-1,
+                                            task_type="GPU", random_seed=42)
+        rfecv = RFECV(estimator=catboost_model, step=1, cv=5, scoring='roc_auc')
+        rfecv.fit(X, y)
+        selected_features = X.columns[rfecv.support_]
+        print(f"Nombre de features sélectionnées : {len(selected_features)}")
+
+        # Conserver uniquement les features sélectionnées
+        train_df = train_df[selected_features]
 
         train_df = reduce_memory(train_df)
 
         # Stocker les colonnes du train
         self.train_columns = train_df.columns
 
+        self.save(os.path.join(self.data_directory, "param"))
+
         return train_df
 
     def transform(self, test_df):
+        self.load(os.path.join(self.data_directory, "param"))
+
+        test_df = replace_infinite_values(test_df)
+        if self.impute:
+            test_df = impute_missing_values(test_df)
+
         # Initial feature engineering
         test_df = feature_engineering(test_df)
 
@@ -1155,29 +1185,29 @@ class FeatureEngineeringPipeline:
 
         # Load and merge additional features
         with timer("Bureau and bureau_balance data"):
-            bureau_df = get_bureau(self.data_directory, sk_id_curr_list)
+            bureau_df = get_bureau(self.data_directory, sk_id_curr_list, self.impute)
             test_df = pd.merge(test_df, bureau_df, on='SK_ID_CURR', how='left')
             del bureau_df
             gc.collect()
 
         with timer("previous_application"):
-            prev_df = get_previous_applications(self.data_directory, sk_id_curr_list)
+            prev_df = get_previous_applications(self.data_directory, sk_id_curr_list, self.impute)
             test_df = pd.merge(test_df, prev_df, on='SK_ID_CURR', how='left')
             del prev_df
             gc.collect()
 
         with timer("previous applications balances"):
-            pos = get_pos_cash(self.data_directory, sk_id_curr_list)
+            pos = get_pos_cash(self.data_directory, sk_id_curr_list, self.impute)
             test_df = pd.merge(test_df, pos, on='SK_ID_CURR', how='left')
             del pos
             gc.collect()
 
-            ins = get_installment_payments(self.data_directory, sk_id_curr_list)
+            ins = get_installment_payments(self.data_directory, sk_id_curr_list, self.impute)
             test_df = pd.merge(test_df, ins, on='SK_ID_CURR', how='left')
             del ins
             gc.collect()
 
-            cc = get_credit_card(self.data_directory, sk_id_curr_list)
+            cc = get_credit_card(self.data_directory, sk_id_curr_list, self.impute)
             test_df = pd.merge(test_df, cc, on='SK_ID_CURR', how='left')
             del cc
             gc.collect()
@@ -1191,7 +1221,7 @@ class FeatureEngineeringPipeline:
             test_df = replace_infinite_values(test_df)
 
             # Vérifier s'il y a des valeurs manquantes et appliquer l'imputation si nécessaire
-            if self.data_directory == "data/Cleaned/Imputed/" and test_df.isnull().sum().sum() > 0:
+            if self.impute and test_df.isnull().sum().sum() > 0:
                 test_df = impute_missing_values(test_df)
                 print(f"Gestion des valeurs manquantes - done")
 
@@ -1223,7 +1253,7 @@ class FeatureEngineeringPipeline:
         return df
 
     def save(self, directory):
-        """ Save the group statistics and train columns to files. """
+        """ Save label encoders and train columns to files. """
         os.makedirs(directory, exist_ok=True)
         with open(os.path.join(directory, 'train_columns.pkl'), 'wb') as f:
             pickle.dump(self.train_columns, f)
@@ -1236,16 +1266,10 @@ class FeatureEngineeringPipeline:
         gc.collect()
 
     def load(self, directory):
-        """ Load the group statistics and train columns from files. """
+        """ Load label encoders and train columns from files. """
         with open(os.path.join(directory, 'train_columns.pkl'), 'rb') as f:
             self.train_columns = pickle.load(f)
         with open(os.path.join(directory, 'label_encoders.pkl'), 'rb') as f:
             self.label_encoders = pickle.load(f)
 
-
-# Fonction pour libérer la mémoire
-def free_memory(df):
-    """Libère la mémoire utilisée par un DataFrame."""
-    del df
-    gc.collect()
 

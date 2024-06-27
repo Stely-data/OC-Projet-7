@@ -1,71 +1,14 @@
-import os
 from flask import Flask, request, jsonify
 import joblib
 import pandas as pd
-from catboost import CatBoostClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
-from models import (
-    PipelineWithDriftDetection, ThresholdClassifier,
-    FeatureEngineeringPipelineWrapper, clean_column_names,
-    replace_infinite_values, prepare_pip_data
-)
+import shap
 
-# Meilleurs paramètres pour le modèle CatBoost
-best_params = {
-    'depth': 6,
-    'iterations': 1000,
-    'l2_leaf_reg': 2,
-    'learning_rate': 0.03
-}
-
-# Initialisation du modèle CatBoost avec les meilleurs paramètres
-catboost_model = CatBoostClassifier(
-    verbose=0,
-    thread_count=-1,
-    task_type="GPU",
-    **best_params
-)
 
 app = Flask(__name__)
 
-# Chemin pour sauvegarder le fichier joblib
-joblib_file = 'pipeline_credit_scoring_with_drift_detection.joblib'
-
-# Fonction pour re-sauvegarder le modèle sur Heroku
-def save_model_on_heroku():
-    # Chemin dynamique pour le fichier CSV
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(base_dir, 'data/Sources/application_train.csv')
-
-    # Chargez les données d'entraînement
-    application_train = pd.read_csv(csv_path)
-
-    # Vérifiez si la colonne 'CODE_GENDER' est présente
-    if 'CODE_GENDER' in application_train.columns:
-        print("Colonne 'CODE_GENDER' trouvée dans les données.")
-    else:
-        print("Colonne 'CODE_GENDER' non trouvée dans les données.")
-        print("Colonnes disponibles : ", application_train.columns.tolist())
-
-    # Initialisez et entraînez le modèle ici
-    pipeline = Pipeline([
-        ('preprocessor', FunctionTransformer(prepare_pip_data, validate=False)),
-        ('classifier', ThresholdClassifier(catboost_model, threshold=0.49))
-    ])
-
-    pipeline_with_drift = PipelineWithDriftDetection(pipeline, application_train)
-    pipeline_with_drift.fit(application_train)
-
-    # Sauvegardez le modèle
-    joblib.dump(pipeline_with_drift, joblib_file)
-
-# Essayez de charger le fichier joblib existant
-try:
-    pipeline = joblib.load(joblib_file)
-except KeyError:
-    save_model_on_heroku()
-    pipeline = joblib.load(joblib_file)
+# Charger le modèle et le seuil
+model = joblib.load('best_model.pkl')
+optimal_threshold = joblib.load('optimal_threshold.pkl')
 
 
 @app.route("/")
@@ -76,46 +19,30 @@ def read_root():
 @app.route("/predict/", methods=['POST'])
 def predict():
     data = request.get_json(force=True)
-    client_id = data.get('client_id')
+    df = pd.DataFrame([data])
 
-    if client_id is None:
-        return jsonify({"error": "client_id is required"}), 400
+    # Vérifier si le DataFrame a plus d'une ligne
+    if df.shape[0] != 1:
+        return jsonify({'error': 'Le DataFrame doit contenir exactement une seule ligne.'}), 400
 
-    # Charger les données du client à partir de l'ID
-    client_data = get_client_data(client_id)
+    # Prédiction
+    proba = model.predict_proba(df)[:, 1]
+    prediction = (proba >= optimal_threshold).astype(int)
 
-    if client_data.empty:
-        return jsonify({"error": "client_id not found"}), 404
+    # Calculer l'importance des features locales avec SHAP
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(df)
 
-    # Appliquer le preprocessing
-    client_data_transformed = pipeline.pipeline.named_steps['preprocessor'].transform(client_data)
-
-    # Prédire le score et la probabilité
-    score = pipeline.pipeline.named_steps['classifier'].base_classifier.predict_proba(client_data_transformed)[:, 1][0]
-    prediction = pipeline.pipeline.named_steps['classifier'].base_classifier.predict(client_data_transformed)[0]
-
-    # Calculer la feature importance locale (SHAP)
-    explainer = shap.Explainer(pipeline.pipeline.named_steps['classifier'].base_classifier)
-    shap_values = explainer(client_data_transformed)
-    feature_importance = shap_values.values[0].tolist()
-    feature_names = client_data_transformed.columns.tolist()
-    #feature_importance_dict = dict(zip(feature_names, feature_importance))
-    feature_importance_dict = {str(k): float(v) for k, v in zip(feature_names, feature_importance)}
+    # Obtenir l'importance des features sous forme de dictionnaire
+    feature_importance = dict(zip(df.columns, shap_values[0][0]))
 
     return jsonify({
-        "client_id": int(client_id),
-        "score": float(score),
-        "prediction": int(prediction),
-        "feature_importance": feature_importance_dict
+        'prediction': int(prediction[0]),
+        'probability': float(proba[0]),
+        'feature_importance': feature_importance  # Importance des features pour la prédiction donnée
     })
 
 
-def get_client_data(client_id):
-    # Charger les données du client en utilisant l'ID
-    df = pd.read_csv('data/Sources/application_test.csv')
-    client_data = df[df['SK_ID_CURR'] == client_id]
-    return client_data
-
-
 if __name__ == "__main__":
-    app.run(debug=True, use_reloader=False, port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    app.run(debug=True, host='0.0.0.0', port=port)
