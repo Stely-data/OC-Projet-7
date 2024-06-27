@@ -54,25 +54,31 @@ Ce sous-dossier contient les paramètres et les objets nécessaires pour le pipe
 ### 1. Déploiement de l'API Flask
 
 1. Installez les dépendances :
+
    pip install -r requirements.txt
 
 
 2. Déployez l'API sur Heroku :
+
    heroku create project7-creditscoring
-   git push heroku main
+
+   git push heroku Rework
 
 ### 2. Exécution de l'Application Streamlit
 
 1. Installez les dépendances :
+
    pip install -r requirements.txt
 
 
 2. Lancez l'application Streamlit :
+
    streamlit run streamlit_app.py
 
 ### 3. Vérification de la Dérive des Données
 
 1. Exécutez le script de vérification de la dérive des données :
+
    python check_data_drift.py data/Sources/application_test.csv
 
 
