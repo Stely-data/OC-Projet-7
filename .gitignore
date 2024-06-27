@@ -4,5 +4,6 @@
 /.ipynb_checkpoints
 /__pycache__
 /catboost_info
-/data/Sources
 /data/Cleaned
+data/Sources/Projet+Mise+en+prod+-+home-credit-default-risk.zip
+data/Sources/sample_submission.csv
