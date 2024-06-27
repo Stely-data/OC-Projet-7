@@ -25,6 +25,7 @@ Le projet est organisé en plusieurs dossiers et fichiers pour structurer le cod
 
 Ce dossier contient les données utilisées pour l'entraînement et la validation du modèle.
 
+- `data_drift_report.html` : Rapport de dérive des données généré par le script `check_data_drift.py`.
 - `data/Sources/` : Contient toutes les sources de données brutes.
   - `application_train.csv` : Données d'entraînement.
   - `application_test.csv` : Données de test.
@@ -35,7 +36,6 @@ Ce dossier contient les données utilisées pour l'entraînement et la validatio
   - `POS_CASH_balance.csv` : Équilibres POS CASH.
   - `previous_application.csv` : Données sur les demandes de crédit précédentes.
   - `HomeCredit_columns_description.csv` : Description des colonnes des données Home Credit.
-  - `data_drift_report.html` : Rapport de dérive des données généré par le script `check_data_drift.py`.
 
 ### Dossier `data/Sources/param`
 
